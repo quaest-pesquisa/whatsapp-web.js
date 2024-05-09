@@ -88,11 +88,25 @@ client.on('message', async msg => {
         }
     } else if (msg.body.startsWith('!join ')) {
         const inviteCode = msg.body.split(' ')[1];
-        try {
-            await client.acceptInvite(inviteCode);
-            msg.reply('Joined the group!');
-        } catch (e) {
-            msg.reply('That invite code seems to be invalid.');
+        const result = await client.acceptInvite(inviteCode);
+        /**
+         * Example of the {@link result} object:
+         * 
+         * {
+         *   gid: {
+         *     server: 'g.us',
+         *     user: 'XXXXXXXXXX',
+         *     _serialized: 'XXXXXXXXXX@g.us'
+         *   },
+         *   status: 200,
+         *   message: 'You joined the group/community successfully'
+         * }
+         */
+        console.log(result);
+    } else if (msg.body === '!acceptInviteV4' && msg.hasQuotedMsg) {
+        const quotedMsg = await msg.getQuotedMessage();
+        if (quotedMsg.inviteV4) {
+            await client.acceptInvite(quotedMsg.inviteV4);
         }
     } else if (msg.body.startsWith('!addmembers')) {
         const group = await msg.getChat();
@@ -593,4 +607,9 @@ client.on('group_membership_request', async (notification) => {
     /** You can approve or reject the newly appeared membership request: */
     await client.approveGroupMembershipRequestss(notification.chatId, notification.author);
     await client.rejectGroupMembershipRequests(notification.chatId, notification.author);
+});
+
+client.on('vote_update', (vote) => {
+    /** The vote that was affected: */
+    console.log(vote);
 });

@@ -86,9 +86,7 @@ exports.ExposeStore = (moduleRaidStr) => {
     };
     window.Store.GroupInvite = {
         ...window.mR.findModule('resetGroupInviteCode')[0],
-        ...window.mR.findModule('queryGroupInvite')[0]
-    };
-    window.Store.GroupInviteV4 = {
+        ...window.mR.findModule('queryGroupInvite')[0],
         ...window.mR.findModule('queryGroupInviteV4')[0],
         ...window.mR.findModule('sendGroupInviteMessage')[0]
     };
@@ -556,6 +554,15 @@ exports.LoadUtils = () => {
         return msg;
     };
 
+    window.WWebJS.getPollVoteModel = (vote) => {
+        const _vote = vote.serialize();
+        if (vote.parentMsgKey) {
+            const msg = window.Store.Msg.get(vote.parentMsgKey);
+            msg && (_vote.parentMessage = window.WWebJS.getMessageModel(msg));
+            return _vote;
+        }
+        return null;
+    };
 
     window.WWebJS.getChatModel = async chat => {
 
