@@ -295,12 +295,7 @@ class Message extends Base {
             this.allowMultipleAnswers = Boolean(!data.pollSelectableOptionsCount);
             this.pollInvalidated = data.pollInvalidated;
             this.isSentCagPollCreation = data.isSentCagPollCreation;
-
-            delete this._data.pollName;
-            delete this._data.pollOptions;
-            delete this._data.pollSelectableOptionsCount;
-            delete this._data.pollInvalidated;
-            delete this._data.isSentCagPollCreation;
+            this.messageSecret = Object.keys(data.messageSecret).map((key) =>  data.messageSecret[key]);
         }
 
         return super._patch(data);
@@ -422,11 +417,18 @@ class Message extends Base {
     }
 
     /**
-     * Accept Group V4 Invite
-     * @returns {Promise<Object>}
+     * @typedef {Object} JoinGroupResponse
+     * @property {?ChatId} gid The group ID object
+     * @property {number} status An error code
+     * @property {string} message The message that explains a response
+     */
+
+    /**
+     * Accepts a private invitation (inviteV4) to join a group or a community
+     * @returns {Promise<JoinGroupResponse>} Returns an object that handles the result of an operation
      */
     async acceptGroupV4Invite() {
-        return await this.client.acceptGroupV4Invite(this.inviteV4);
+        return await this.client.acceptInvite(this.inviteV4);
     }
 
     /**

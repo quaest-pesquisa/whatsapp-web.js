@@ -18,14 +18,11 @@ declare namespace WAWebJS {
         /** Puppeteer browser running WhatsApp Web */
         pupBrowser?: puppeteer.Browser
 
-        /** Client interactivity interface */
-        interface?: InterfaceController
+        /** Accepts an invitation code or a private invitation (inviteV4) to join a group or a community */
+        acceptInvite(invitation: string | InviteV4): Promise<JoinGroupResponse>
 
-        /**Accepts an invitation to join a group */
-        acceptInvite(inviteCode: string): Promise<string>
-
-        /** Accepts a private invitation to join a group (v4 invite) */
-        acceptGroupV4Invite: (inviteV4: InviteV4Data) => Promise<{status: number}>
+        /** Accepts a private invitation (inviteV4) to join a group or a community */
+        acceptGroupV4Invite: (invitation: InviteV4) => Promise<JoinGroupResponse>
 
         /**Returns an object with information about the invite code's group */
         getInviteInfo(inviteCode: string): Promise<object>
@@ -383,6 +380,14 @@ declare namespace WAWebJS {
 
         /** Emitted when the RemoteAuth session is saved successfully on the external Database */
         on(event: 'remote_session_saved', listener: () => void): this
+
+        /**
+         * Emitted when some poll option is selected or deselected,
+         * shows a user's current selected option(s) on the poll
+         */
+        on(event: 'vote_update', listener: (
+            vote: PollVote
+        ) => void): this
     }
 
     /** Current connection information */
@@ -926,8 +931,8 @@ declare namespace WAWebJS {
         * Note that the Message must still be in the web app cache for this to work, otherwise will return null.
         */
         reload: () => Promise<Message>,
-        /** Accept the Group V4 Invite in message */
-        acceptGroupV4Invite: () => Promise<{status: number}>,
+        /** Accepts a private invitation (inviteV4) to join a group or a community */
+        acceptGroupV4Invite: () => Promise<JoinGroupResponse>,
         /** Deletes the message from the chat */
         delete: (everyone?: boolean) => Promise<void>,
         /** Downloads and returns the attached message media */
@@ -1028,6 +1033,34 @@ declare namespace WAWebJS {
         options: PollSendOptions
 
         constructor(pollName: string, pollOptions: Array<string>, options?: PollSendOptions)
+    }
+
+    /** Represents a Poll Vote on WhatsApp */
+    export interface PollVote {
+        /** The person who voted */
+        voter: string;
+
+        /**
+         * The selected poll option(s)
+         * If it's an empty array, the user hasn't selected any options on the poll,
+         * may occur when they deselected all poll options
+         */
+        selectedOptions: SelectedPollOption[];
+
+        /** Timestamp the option was selected or deselected at */
+        interractedAtTs: number;
+
+        /** The poll creation message associated with the poll vote */
+        parentMessage: Message;
+    }
+
+    /** Selected poll option structure */
+    export interface SelectedPollOption {
+        /** The local selected option ID */
+        id: number;
+
+        /** The option name */
+        name: string;
     }
 
     export interface Label {
@@ -1355,8 +1388,10 @@ declare namespace WAWebJS {
         timestamp: number,
         /** Amount of messages unread */
         unreadCount: number,
-        /** Last message fo chat */
+        /** Last message of chat */
         lastMessage: Message,
+        /** Indicates if the Chat is pinned */
+        pinned: boolean,
 
         /** Archives this chat */
         archive: () => Promise<void>,
@@ -1516,6 +1551,19 @@ declare namespace WAWebJS {
         sleep: Array<number> | number | null;
     }
 
+    export interface InviteV4 {
+        groupId: string,
+        fromId: string,
+        inviteCode: string,
+        inviteCodeExp: number
+    }
+
+    export interface JoinGroupResponse {
+        gid?: ChatId,
+        status: number,
+        message: string
+    }
+
     export interface GroupChat extends Chat {
         /** Group owner */
         owner: ContactId;
@@ -1537,6 +1585,12 @@ declare namespace WAWebJS {
         setSubject: (subject: string) => Promise<boolean>;
         /** Updates the group description */
         setDescription: (description: string) => Promise<boolean>;
+        /**
+         * Updates the group setting to allow only admins to add members to the group.
+         * @param {boolean} [adminsOnly=true] Enable or disable this option 
+         * @returns {Promise<boolean>} Returns true if the setting was properly updated. This can return false if the user does not have the necessary permissions.
+         */
+        setAddMembersAdminsOnly: (adminsOnly?: boolean) => Promise<boolean>;
         /** Updates the group settings to only allow admins to send messages
          * @param {boolean} [adminsOnly=true] Enable or disable this option
          * @returns {Promise<boolean>} Returns true if the setting was properly updated. This can return false if the user does not have the necessary permissions.

@@ -15,7 +15,8 @@ const { LoadUtils } = require('./util/Injected/Utils');
 const ChatFactory = require('./factories/ChatFactory');
 const ContactFactory = require('./factories/ContactFactory');
 const WebCacheFactory = require('./webCache/WebCacheFactory');
-const { ClientInfo, Message, MessageMedia, Contact, Location, Poll, GroupNotification, Label, Call, Buttons, List, Reaction } = require('./structures');
+const { ClientInfo, Message, MessageMedia, Contact, Location, Poll, PollVote, GroupNotification, Label, Call, Buttons, List, Reaction } = require('./structures');
+const LegacySessionAuth = require('./authStrategies/LegacySessionAuth');
 const NoAuth = require('./authStrategies/NoAuth');
 
 /**
@@ -57,6 +58,7 @@ const NoAuth = require('./authStrategies/NoAuth');
  * @fires Client#contact_changed
  * @fires Client#group_admin_changed
  * @fires Client#group_membership_request
+ * @fires Client#vote_update
  */
 class Client extends EventEmitter {
     constructor(options = {}) {
@@ -495,6 +497,38 @@ class Client extends EventEmitter {
                      * @param {Boolean} isContact Indicates if a contact or a group participant changed their phone number.
                      */
                     this.emit(Events.CONTACT_CHANGED, message, oldId, newId, isContact);
+                } else if (msg.subtype === 'remove' || msg.subtype === 'leave') {
+                    /**
+                     * Emitted when a user leaves the chat or is removed by an admin.
+                     * @event Client#group_leave
+                     * @param {GroupNotification} notification GroupNotification with more information about the action
+                     */
+                    this.emit(Events.GROUP_LEAVE, notification);
+                } else if (msg.subtype === 'promote' || msg.subtype === 'demote') {
+                    /**
+                     * Emitted when a current user is promoted to an admin or demoted to a regular user.
+                     * @event Client#group_admin_changed
+                     * @param {GroupNotification} notification GroupNotification with more information about the action
+                     */
+                    this.emit(Events.GROUP_ADMIN_CHANGED, notification);
+                } else if (msg.subtype === 'membership_approval_request') {
+                    /**
+                     * Emitted when some user requested to join the group
+                     * that has the membership approval mode turned on
+                     * @event Client#group_membership_request
+                     * @param {GroupNotification} notification GroupNotification with more information about the action
+                     * @param {string} notification.chatId The group ID the request was made for
+                     * @param {string} notification.author The user ID that made a request
+                     * @param {number} notification.timestamp The timestamp the request was made at
+                     */
+                    this.emit(Events.GROUP_MEMBERSHIP_REQUEST, notification);
+                } else {
+                    /**
+                     * Emitted when group settings are updated, such as subject, description or picture.
+                     * @event Client#group_update
+                     * @param {GroupNotification} notification GroupNotification with more information about the action
+                     */
+                    this.emit(Events.GROUP_UPDATE, notification);
                 }
             });
 
@@ -685,7 +719,17 @@ class Client extends EventEmitter {
             });
         }
 
-        await this.pupPage.evaluate(() => {
+        await page.exposeFunction('onPollVoteEvent', (vote) => {
+            const _vote = new PollVote(this, vote);
+            /**
+             * Emitted when some poll option is selected or deselected,
+             * shows a user's current selected option(s) on the poll
+             * @event Client#vote_update
+             */
+            this.emit(Events.VOTE_UPDATE, _vote);
+        });
+
+        await page.evaluate(() => {
             window.Store.Msg.on('change', (msg) => { window.onChangeMessageEvent(window.WWebJS.getMessageModel(msg)); });
             window.Store.Msg.on('change:type', (msg) => { window.onChangeMessageTypeEvent(window.WWebJS.getMessageModel(msg)); });
             window.Store.Msg.on('change:ack', (msg, ack) => { window.onMessageAckEvent(window.WWebJS.getMessageModel(msg), ack); });
@@ -709,6 +753,10 @@ class Client extends EventEmitter {
                 }
             });
             window.Store.Chat.on('change:unreadCount', (chat) => {window.onChatUnreadCountEvent(chat);});
+            window.Store.PollVote.on('add', (vote) => {
+                const pollVoteModel = window.WWebJS.getPollVoteModel(vote);
+                pollVoteModel && window.onPollVoteEvent(pollVoteModel);
+            });
 
             if (window.compareWwebVersions(window.Debug.VERSION, '>=', '2.3000.1014111620')) {
                 const module = window.Store.AddonReactionTable;
@@ -1043,31 +1091,102 @@ class Client extends EventEmitter {
     }
 
     /**
-     * Accepts an invitation to join a group
-     * @param {string} inviteCode Invitation code
-     * @returns {Promise<string>} Id of the joined Chat
+     * @typedef {Object} JoinGroupResponse
+     * @property {?ChatId} gid The group ID object
+     * @property {number} status An error code
+     * @property {string} message The message that explains a response
      */
-    async acceptInvite(inviteCode) {
-        const res = await this.pupPage.evaluate(async inviteCode => {
-            return await window.Store.GroupInvite.joinGroupViaInvite(inviteCode);
-        }, inviteCode);
 
-        return res.gid._serialized;
+    /**
+     * @typedef {Object} InviteV4
+     * @property {string} groupId
+     * @property {string} fromId
+     * @property {string} inviteCode
+     * @property {number} inviteCodeExp
+     */
+
+    /**
+     * Accepts an invitation code or a private invitation (inviteV4) to join a group or a community
+     * @param {string|InviteV4} invitation Invitation code or a private invitation (inviteV4) object
+     * @returns {Promise<JoinGroupResponse>} Returns an object that handles the result of an operation
+     */
+    async acceptInvite(invitation) {
+        return await this.pupPage.evaluate(async (invitation) => {
+            let response;
+            let responseCodes = {
+                default: 'An unknown error occupied while accepting an invitation',
+                serverError: 'A server error occupied while accepting an invitation',
+                membershipApprovalMode: 'A membership request has been sent',
+                200: 'You joined the group/community successfully',
+                304: 'The membership request was already sent',
+                400: 'Unable to join this group/community, try again later',
+                401: 'You can\'t join this group/community because you were removed',
+                404: 'You can\'t join this group/community because it no longer exists',
+                405: 'You can\'t join this group because you were removed from the community',
+                409: 'You can\'t join this group/community because you are already a member of it',
+                410: 'You can\'t join this group/community because this invite link was reset',
+                412: 'You can\'t join this group because the community is full',
+                419: 'You can\'t join this group/community because it is full',
+                429: 'You have reached the limit for the number of groups you can join at this time. You can try joining this group again later',
+                436: 'You can\'t join this group/community because the invite link is unavailable'
+            };
+
+            if (invitation.inviteCode) {
+                let { groupId, fromId, inviteCode, inviteCodeExp } = invitation;
+                let userWid = window.Store.WidFactory.createWid(fromId);
+                try {
+                    response = await window.Store.GroupInvite.joinGroupViaInviteV4(inviteCode, String(inviteCodeExp), groupId, userWid);
+                    response = {
+                        gid: window.Store.WidFactory.createWid(groupId),
+                        status: response.status,
+                        message: response.status >= 500 && responseCodes.serverError || responseCodes[response.status] || responseCodes.default
+                    };
+                } catch (err) {
+                    if (err.name === 'ServerStatusCodeError') {
+                        response = {
+                            gid: null,
+                            status: err.statusCode,
+                            message: err.statusCode >= 500 && responseCodes.serverError || responseCodes.default
+                        };
+                    }
+                    else throw err;
+                }
+                return response;
+            }
+
+            try {
+                response = await window.Store.GroupInvite.joinGroupViaInvite(invitation);
+                response = {
+                    gid: response.gid,
+                    status: 200,
+                    message: responseCodes[200]
+                };
+            } catch (err) {
+                if (err.name === 'ServerStatusCodeError') {
+                    response = {
+                        gid: null,
+                        status: err.statusCode,
+                        message: err.statusCode >= 500 && responseCodes.serverError || responseCodes.default
+                    };
+                } else if (err.membershipApprovalMode) {
+                    response = {
+                        gid: err.gid,
+                        status: 400,
+                        message: responseCodes.membershipApprovalMode
+                    };
+                } else throw err;
+            }
+            return response;
+        }, invitation);
     }
 
     /**
-     * Accepts a private invitation to join a group
-     * @param {object} inviteInfo Invite V4 Info
-     * @returns {Promise<Object>}
+     * Accepts a private invitation (inviteV4) to join a group or a community
+     * @param {InviteV4} invitation A private invitation (inviteV4)
+     * @returns {Promise<JoinGroupResponse>}
      */
-    async acceptGroupV4Invite(inviteInfo) {
-        if (!inviteInfo.inviteCode) throw 'Invalid invite code, try passing the message.inviteV4 object';
-        if (inviteInfo.inviteCodeExp == 0) throw 'Expired invite code';
-        return this.pupPage.evaluate(async inviteInfo => {
-            let { groupId, fromId, inviteCode, inviteCodeExp } = inviteInfo;
-            let userWid = window.Store.WidFactory.createWid(fromId);
-            return await window.Store.GroupInviteV4.joinGroupViaInviteV4(inviteCode, String(inviteCodeExp), groupId, userWid);
-        }, inviteInfo);
+    async acceptGroupV4Invite(invitation) {
+        return this.acceptInvite(invitation);
     }
 
     /**
@@ -1414,8 +1533,13 @@ class Client extends EventEmitter {
                 const statusCode = participant.error ?? 200;
 
                 if (autoSendInviteV4 && statusCode === 403) {
+/*<<<<<<< HEAD
                     window.Store.Contact.gadd(participant.wid, { silent: true });
                     const addParticipantResult = await window.Store.GroupInviteV4.sendGroupInviteMessage(
+=======*/
+                    window.Store.ContactCollection.gadd(participant.wid, { silent: true });
+                    const addParticipantResult = await window.Store.GroupInvite.sendGroupInviteMessage(
+//>>>>>>> fork-alechkos/fix-accept-invite
                         await window.Store.Chat.find(participant.wid),
                         createGroupResult.wid._serialized,
                         createGroupResult.subject,
